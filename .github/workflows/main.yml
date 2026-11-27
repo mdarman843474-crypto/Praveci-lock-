@@ -1,0 +1,77 @@
+name: Build APK from zip
+
+# Repo ke root me POORA project zip daalo (usme settings.gradle.kts, build.gradle.kts aur app folder ho).
+# Ye workflow zip kholkar APK banata hai. Koi project zip na ho to repo me rakha project hi build hota hai.
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find project
+        run: |
+          set -e
+          echo "--- repo files ---"
+          ls -la
+
+          # Wo zip chuno jisme Gradle project (settings.gradle.kts) ho. Kai hon to naam me sabse bada number lega.
+          CHOSEN=""
+          while IFS= read -r z; do
+            if unzip -Z1 "$z" | grep -Eq '(^|/)settings\.gradle(\.kts)?$'; then
+              CHOSEN="$z"
+            else
+              echo "SKIP: $z me settings.gradle.kts nahi hai (ye poora project zip nahi lagti)"
+            fi
+          done < <(find . -maxdepth 1 -name '*.zip' -printf '%f\n' | sort -V)
+
+          if [ -n "$CHOSEN" ]; then
+            echo "Zip chuni: $CHOSEN"
+            rm -rf work
+            mkdir work
+            unzip -q -o "$CHOSEN" -d work
+            SEARCH=work
+          else
+            echo "Poora project zip nahi mili, repo me hi project dhoond raha hoon"
+            SEARCH=.
+          fi
+
+          # Sabse upar wali settings.gradle(.kts) = project ki jad
+          SETTINGS=$(find "$SEARCH" \( -path '*/.git' -o -path '*/.github' -o -path '*/__MACOSX' \) -prune -o \( -name settings.gradle.kts -o -name settings.gradle \) -print | awk '{ print length($0) " " $0 }' | sort -n | head -n 1 | cut -d' ' -f2-)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle.kts kahin nahi mili."
+            echo "Repo ke root me poora project zip rakho (usme settings.gradle.kts, build.gradle.kts aur app folder ho)."
+            while IFS= read -r z; do
+              echo "--- $z ke andar (shuru ki files) ---"
+              unzip -Z1 "$z" | head -n 25
+            done < <(find . -maxdepth 1 -name '*.zip' -printf '%f\n' | sort -V)
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS")
+          echo "Project folder: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # gradlew / gradle-wrapper.jar ki zarurat nahi: Gradle yahin install hota hai
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PinDnsLock-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
